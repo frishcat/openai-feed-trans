@@ -1,7 +1,7 @@
 # OpenAI Feed Trans
  <a href="README.md">English</a> | 中文
 
-# Ver 0.1
+`Ver 0.1`
 
 最近 openai-gtp3.5-turbo 的 API 出来之后，在想如果用来将原来读起来很吃力的外文 RSS 自动翻译，并使用我的 RSS 阅读器以订阅的方式看更新，是不是非常方便。因为刚刚接触 Python，所以又试着让 chatGPT 帮我生成一些代码。经过几天的捣鼓，它竟然可以工作！
 

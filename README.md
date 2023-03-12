@@ -1,5 +1,7 @@
 # OpenAI Feed Trans
 
+English | <a href="README.zh_CN.md">中文</a>
+
 `Ver 0.1`
 
 Recently, after the release of the `openai-gtp3.5-turbo` API, I thought it would be very convenient if it could be used to automatically translate foreign RSS feeds that are difficult to read and update them using my RSS reader as a subscription. Since I just started learning Python, I tried to generate some code with the help of chatGPT. After a few days of tinkering, it actually worked!

@@ -1,0 +1,3 @@
+feedgen
+feedparser
+openai

@@ -3,12 +3,17 @@
 # OpenAI Feed Trans
 # Author: frish
 # Website: https://fri.sh
-# Version: 0.1
+# Version: 0.1a
 #
 # This script reads a remote RSS feed, uses OpenAI to perform translation, and then generates a new RSS feed
 # that is stored at a specified location. It supports resuming translation from where it left off, as well
 # as caching of OpenAI requests.
 
+# 0.1a update:
+# - Optimized token count method
+# - Optimized cache method
+# - Fix bug for save feed crash 
+# - Fix Unfinishe logging bug
 
 import os
 import re
@@ -78,9 +83,8 @@ def split_content(content, max_tokens):
         final_result.append(current_sentence)
 
     return final_result
-    
-class OpenAITranslator():
 
+class OpenAITranslator():
     def __init__(self, model = "gpt-3.5-turbo", max_retry=5, wait_time=1, temperature=0.5, max_tokens=3000):
         self.__openai = openai
         self.__openai.api_key = API_KEY
@@ -95,7 +99,7 @@ class OpenAITranslator():
 
     def prompt_token_count(self, prompt):
         return round(len(prompt) / 4) + 1
-
+    
     def load_token_count(self):
         log_file = os.path.join(LOG_DIR, 'token_count.txt')
         if os.path.exists(log_file):
@@ -123,7 +127,9 @@ class OpenAITranslator():
         retry_count = 0
         while retry_count < self.__max_retry:
             try:
-                logging.debug(f"request openAI, cost about ({self.prompt_token_count(prompt) * 2}) tokens")
+                logging.debug(f"-  request openAI, cost about ({self.prompt_token_count(prompt) * 2}) tokens")
+                token_safe_buffer = 800
+
                 result = openai.ChatCompletion.create(
                     model=self.__model,
                     messages=[
@@ -131,29 +137,29 @@ class OpenAITranslator():
                         {"role": "user", "content": prefix},
                         {"role": "user", "content": prompt}
                     ],
-                    # prompt=prefix + prompt,
-                    max_tokens=self.__max_tokens,
+                    max_tokens=self.__max_tokens - self.prompt_token_count(prompt + prefix) - token_safe_buffer,
                     temperature=self.__temperature
                 )
-                logging.info(f"Response OK. prompt_tokens: {result.usage.prompt_tokens}, completion_tokens: {result.usage.completion_tokens}, total_tokens: {result.usage.total_tokens}")
+                logging.info(f"-  Response OK. prompt_tokens: {result.usage.prompt_tokens}, completion_tokens: {result.usage.completion_tokens}, total_tokens: {result.usage.total_tokens}")
                 
                 self.save_token_count(result)
                 return result.choices[0].message.content
 
             except openai.error.APIError as e:
                 if e.status_code == 500:  # "Internal server error"
-                    logging.warning(f"API Internal server error ({e.status_code}): {e.message})")
-                    logging.warning(f"Retrying... ({retry_count + 1}/{self.__max_retry})")
+                    logging.warning(f"-  API Internal server error ({e.status_code}): {e.message})")
+                    logging.warning(f"-  Retrying... ({retry_count + 1}/{self.__max_retry})")
                     time.sleep(self.__wait_time)
                     retry_count += 1
                 else:
-                    logging.error(f"API Error, return origin prompt")
+                    logging.error(f"-  API Error, return origin prompt")
                     return prompt
         else:
-            logging.error(f"API Error: Failed after {self.max_retry} retries, return origin prompt")
+            logging.error(f"-  API Error: Failed after {self.max_retry} retries, return origin prompt")
             return prompt
 
     def translate(self, content):
+        if LOCAL_DEBUG: return '***local debug***'
         return self.__request(self.__prompt_prefix, content)
 
 class Cache():
@@ -161,6 +167,7 @@ class Cache():
         self.__entries = None
         self.__splits = {}
         self.__urls = []
+        self.__titles = []
         self.__splits_cache_file = os.path.join(CACHE_DIR, SPLITS_CACHE_FILENAME)
         self.__cache_file = os.path.join(CACHE_DIR, CACHE_FILENAME)
         self.updated = time.strptime("2023-01-01 00:00:00", "%Y-%m-%d %H:%M:%S")
@@ -177,6 +184,7 @@ class Cache():
             self.__entries = d.entries
             self.updated = d.feed.updated_parsed
             self.__urls = [ e.link for e in d.entries ]
+            self.__titles = [ e.title for e in d.entries ]
             logging.debug(f"Local cache feed loaded ({self.__cache_file}), last update in {d.feed.updated}")
 
     def count(self):
@@ -195,27 +203,33 @@ class Cache():
         hashtag = md5.hexdigest()
         self.__splits[hashtag] = translated_content
         with open(self.__splits_cache_file, 'w') as f:
-            json.dump(self.__splits, f, indent=2)
-            
+            json.dump(self.__splits, f, indent=2)          
 
     def clean_splits(self):
         self.__splits = {}
-        os.remove(self.__splits_cache_file)
+        if os.path.exists(self.__splits_cache_file):
+            os.remove(self.__splits_cache_file)
     
-    def cached(self, url):
-        return url in self.__urls
+    def cached(self, url, title):
+        return url in self.__urls or title in self.__titles
 
     def add(self, url):
         self.__urls.append(url)
 
-    def content(self,url):
-        
-        index = [i for i, d in enumerate(self.__entries) if d.get('link') == url][0]
+    def content(self, url, title):
+        indexes_url = [i for i, d in enumerate(self.__entries) if d.get('link') == url]
+        indexes_title = [i for i, d in enumerate(self.__entries) if d.get('title') == title]
+        if indexes_url:
+            index = indexes_url[0]
+        elif indexes_title:
+            index = indexes_title[0]
+        else:
+            return None
+
         content = self.__entries[index].content[0].value
         type = self.__entries[index].content[0].type
 
         return (content, type)
-
 
 class Feed():
     def __init__(self):
@@ -242,7 +256,7 @@ class Feed():
                 self.__source_feed = feedparser.parse(tmp_path)
                 if self.__source_feed.feed:
                     self.__loaded = True
-                    logging.info(f"Load source feed succeed, from {url}.")
+                    logging.info(f"Load source feed succeed, {len(self.__source_feed.entries)} entries, from {url}")
                     return True
                 else:
                     logging.error(f"Load source failed, from {url}, Exception: Bad Feed.")
@@ -258,7 +272,6 @@ class Feed():
     
     def is_unfinished(self):
         new_feed_count = len(self.__source_feed.entries)
-        logging.info(f"Last time work is unfinished...")
         return new_feed_count > self.__cache.count()
 
     def __clone_to_feedgen_entry(self, feed_parser_entry):
@@ -286,13 +299,15 @@ class Feed():
 
         for entry in entries:
             url = entry.link
+            title = entry.title
             new_entry = self.__clone_to_feedgen_entry(entry)
 
-            if cache.cached(url):
-                new_entry.content(cache.content(url)[0], None, cache.content(url)[1])
+            if cache.cached(url, title):
+                new_entry.content(cache.content(url, title)[0], None, cache.content(url, title)[1])
                 logging.debug(f"Entry \"{entry.title}\" already cached.")
             else:
-                splited_contents = split_content(entry.content[0].value, MAX_TOKENS)
+                logging.info(f"[{entries.index(entry)+1}/{len(entries)}] Start translating '{entry.title}'.")
+                splited_contents = split_content(entry.content[0].value, MAX_TOKENS*4/2.5)
                 translated_content = ""
                 logging_index = 0
                 logging_cached = ''
@@ -309,44 +324,73 @@ class Feed():
                     translated_content += c
 
                     logging_index += 1
-                    logging.info(f"{logging_cached} Entry \"{entry.title}\" Translateing... ({logging_index}/{len(splited_contents)})")
+                    logging.info(f"- {logging_cached} Entry Translateing... ({logging_index}/{len(splited_contents)})")
 
-                logging.info(f"Entry \"{entry.title}\" Translated.")
+                logging.info(f"√  Entry \"{entry.title}\" Translated.\n")
                 new_entry.content(translated_content, None, entry.content[0].type)
-                cache.clean_splits()
             
             self.__translated_entries.append(new_entry)
             self.save(os.path.join(CACHE_DIR, CACHE_FILENAME))
 
+        self.__cache.clean_splits()
         logging.info(f"All done. Token cost this time: {self.__translator.token_count}") 
 
     def save(self, url):
         feed = self.__source_feed.feed
-        entries = self.__source_feed.entries
 
         # Set feed header
         fg = FeedGenerator()
+
         fg.title(feed.title)
-        fg.subtitle(feed.subtitle)
-        fg.link(href=feed.link)
         fg.description(feed.description)
-        fg.logo(feed.image.href)
-        fg.pubDate(feed.updated)
-        fg.lastBuildDate(feed.updated)
+        fg.link(href=feed.link)
         fg.generator('AI-TransRSS', '0.1', 'https://fri.sh')
         fg.language("zh-CN")
 
-        image = feed.image
-        fg.image(url=image.href, title=image.title, link=image.link, width=str(image.width),height=str(image.height))
+        try:
+            if hasattr(feed, 'image'):
+                image = feed.image
+                fg.logo(image.href)
 
+                if hasattr(image, 'width'):
+                    width = image.width
+                else:
+                    width = None
+
+                if hasattr(image, 'height'):
+                    height = image.height
+                else:
+                    height = None
+
+                fg.image(url=image.href, 
+                        title=image.title, 
+                        link=image.link,
+                        width=width,
+                        height=height
+                        )
+
+            fg.pubDate(feed.updated)
+            fg.lastBuildDate(feed.updated)
+            fg.subtitle(feed.subtitle)
+        except AttributeError as e:
+            logging.warn(f'Source feed may lost one or more attributes: {e}')
+            
         # Set entries
         for entry in self.__translated_entries:
             fg.add_entry(entry, order='append') 
         
         # Save to file
-        fg.rss_file(url)
+        try: 
+            fg.rss_file(url)
+        except Exception as e:
+            logging.error(f'Save feed error: {e}')
 
 if __name__ == '__main__':
+    # If LOCAL_DEBUG == True, AI Translator will not work instead of
+    # return a placeholder string    
+    LOCAL_DEBUG = True
+
+    # Setup logging
     logging.basicConfig(
         level=LOGGING_LEVEL,
         format='%(asctime)s [%(levelname)s] %(message)s',
@@ -360,21 +404,12 @@ if __name__ == '__main__':
     logging.info(f"-----------------------------------------------")  
     logging.info(f"OpenAIFeedTrans start.") 
 
-    ai = OpenAITranslator()
-
     feed = Feed()
     if feed.load(RSS_URL):
         if feed.is_new_updated() or feed.is_unfinished():
             feed.translate_entries()
-        
-            # Copy the translated feed to your web dir
-            if not os.path.exists(OUTPUT_DIR):
-                os.mkdir(OUTPUT_DIR)
 
             # Copy the translated feed to your web dir
-            if not os.path.exists(CACHE_DIR):
-                os.mkdir(CACHE_DIR)
-
             shutil.copy(os.path.join(CACHE_DIR, CACHE_FILENAME), os.path.join(OUTPUT_DIR, OUTPUT_FILENAME))
         else:
             logging.info(f"Source feed is not updated, bye.")

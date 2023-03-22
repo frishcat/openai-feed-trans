@@ -1,10 +1,19 @@
+# Author: frish
+# Website: https://fri.sh
+# Version: 0.1a
+#
+# This file reads the config.ini file and sets the variables accordingly.
+#
+# 0.1a update:
+# - Move setup paths code to config.py from main.py
+
 import os
 import logging
 import configparser
 
 
 d = configparser.ConfigParser()
-d.read('config_local_debug.ini')
+d.read('config.ini')
 
 # - env
 os.environ["http_proxy"] = d['env']['http_proxy']
@@ -14,7 +23,6 @@ os.environ["https_proxy"] = d['env']['https_proxy']
 RSS_URL = d['source']['rss_url']
 
 # - OpenAI
-
 API_KEY = d['openai']['api-key']
 PROMPT_PREFIX = d['openai']['prompt_prefix']
 MAX_RETRY = int(d['openai']['max_retry'])
@@ -44,3 +52,6 @@ if not os.path.exists(LOG_DIR):
 
 if not os.path.exists(CACHE_DIR):
     os.mkdir(CACHE_DIR)
+
+if not os.path.exists(OUTPUT_DIR):
+    os.mkdir(OUTPUT_DIR)
